@@ -1,0 +1,60 @@
+name: rates
+on:
+  schedule:
+    - cron: '*/30 3-18 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch rates from tgju
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request, datetime, sys
+          data = None
+          for h in ['call1', 'call2', 'call3', 'call4']:
+              try:
+                  req = urllib.request.Request(f'https://{h}.tgju.org/ajax.json', headers={'User-Agent': 'Mozilla/5.0'})
+                  data = json.load(urllib.request.urlopen(req, timeout=30))['current']
+                  break
+              except Exception as e:
+                  print(h, e)
+          if not data:
+              sys.exit(0)
+          def g(k):
+              x = data.get(k)
+              if not x:
+                  return None
+              try:
+                  v = float(str(x['p']).replace(',', '')) / 10
+              except Exception:
+                  return None
+              ts = str(x.get('ts', '')).replace(' ', 'T') + '+03:30'
+              return {'v': round(v), 'ts': ts}
+          out = {
+              'src': 'tgju.org',
+              'at': datetime.datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+              'free': {c: g(k) for c, k in [('USD', 'price_dollar_rl'), ('EUR', 'price_eur'), ('CNY', 'price_cny'), ('AED', 'price_aed')]},
+              'ex': {c: g(k) for c, k in [('USD', 'ice_transfer_usd_sell'), ('EUR', 'ice_transfer_eur_sell'), ('CNY', 'ice_transfer_cny_sell'), ('AED', 'ice_transfer_aed_sell')]},
+          }
+          if not out['free'].get('USD'):
+              sys.exit(0)
+          old = {}
+          try:
+              old = json.load(open('rates.json'))
+          except Exception:
+              pass
+          if old.get('free') == out['free'] and old.get('ex') == out['ex']:
+              print('no change'); sys.exit(0)
+          json.dump(out, open('rates.json', 'w'), ensure_ascii=False)
+          print(out)
+          PY
+      - name: Commit
+        run: |
+          git config user.name "rates-bot"
+          git config user.email "rates-bot@users.noreply.github.com"
+          git add rates.json
+          git diff --cached --quiet || (git commit -m "rates update" && git push)
